@@ -1,0 +1,122 @@
+/**/
+/*stepper*/
+
+
+#include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+#define IN1 GPIO_NUM_16
+#define IN2 GPIO_NUM_17
+#define IN3 GPIO_NUM_18
+#define IN4 GPIO_NUM_19
+
+/* Ajustar aquí la velocidad */
+#define STEP_DELAY_MS 10
+
+/* Cantidad de ciclos de secuencia */
+#define STEPS_PER_MOVE 256
+
+static const char *TAG = "STEPPER";
+
+/*
+ * Secuencia half-step para 28BYJ-48
+ */
+static const uint8_t sequence[8][4] =
+{
+    {1, 0, 0, 0},
+    {1, 1, 0, 0},
+    {0, 1, 0, 0},
+    {0, 1, 1, 0},
+    {0, 0, 1, 0},
+    {0, 0, 1, 1},
+    {0, 0, 0, 1},
+    {1, 0, 0, 1}
+};
+
+static void configurar_gpio(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask =
+            (1ULL << IN1) |
+            (1ULL << IN2) |
+            (1ULL << IN3) |
+            (1ULL << IN4),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+}
+
+static void motor_step(uint8_t step)
+{
+    gpio_set_level(IN1, sequence[step][0]);
+    gpio_set_level(IN2, sequence[step][1]);
+    gpio_set_level(IN3, sequence[step][2]);
+    gpio_set_level(IN4, sequence[step][3]);
+}
+
+static void motor_stop(void)
+{
+    gpio_set_level(IN1, 0);
+    gpio_set_level(IN2, 0);
+    gpio_set_level(IN3, 0);
+    gpio_set_level(IN4, 0);
+}
+
+static void motor_forward(uint32_t steps)
+{
+    for (uint32_t i = 0; i < steps; i++)
+    {
+        for (uint8_t step = 0; step < 8; step++)
+        {
+            motor_step(step);
+            vTaskDelay(pdMS_TO_TICKS(STEP_DELAY_MS));
+        }
+    }
+}
+
+static void motor_reverse(uint32_t steps)
+{
+    for (uint32_t i = 0; i < steps; i++)
+    {
+        for (int step = 7; step >= 0; step--)
+        {
+            motor_step(step);
+            vTaskDelay(pdMS_TO_TICKS(STEP_DELAY_MS));
+        }
+    }
+}
+
+void app_main(void)
+{
+    configurar_gpio();
+
+    ESP_LOGI(TAG, "Velocidad configurada: %d ms", STEP_DELAY_MS);
+
+    while (1)
+    {
+        ESP_LOGI(TAG, "Giro horario");
+
+        motor_forward(STEPS_PER_MOVE);
+
+        motor_stop();
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGI(TAG, "Giro antihorario");
+
+        motor_reverse(STEPS_PER_MOVE);
+
+        motor_stop();
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}

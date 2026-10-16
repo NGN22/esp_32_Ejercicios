@@ -1,0 +1,68 @@
+
+#include <stdio.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "driver/gpio.h"
+#include "esp_log.h"
+
+#define IN1 GPIO_NUM_16
+#define IN2 GPIO_NUM_17
+#define IN3 GPIO_NUM_18
+#define IN4 GPIO_NUM_19
+
+static const char *TAG = "STEPPER";
+
+static void configurar_gpio(void)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask =
+            (1ULL << IN1) |
+            (1ULL << IN2) |
+            (1ULL << IN3) |
+            (1ULL << IN4),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+
+    gpio_config(&io_conf);
+}
+
+static void apagar_todo(void)
+{
+    gpio_set_level(IN1, 0);
+    gpio_set_level(IN2, 0);
+    gpio_set_level(IN3, 0);
+    gpio_set_level(IN4, 0);
+}
+
+void app_main(void)
+{
+    configurar_gpio();
+
+    while (1)
+    {
+        ESP_LOGI(TAG, "IN1");
+        apagar_todo();
+        gpio_set_level(IN1, 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGI(TAG, "IN2");
+        apagar_todo();
+        gpio_set_level(IN2, 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGI(TAG, "IN3");
+        apagar_todo();
+        gpio_set_level(IN3, 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        ESP_LOGI(TAG, "IN4");
+        apagar_todo();
+        gpio_set_level(IN4, 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}

@@ -1,0 +1,228 @@
+/* mapreo de botosne*/
+
+/**
+static const char *get_button_name(uint8_t cmd)
+{
+    switch (cmd)
+    {
+        case 0x45: return "CH-";
+        case 0x46: return "CH";
+        case 0x47: return "CH+";
+
+        case 0x44: return "PREV";
+        case 0x43: return "PLAY";
+        case 0x15: return "NEXT";
+
+        case 0x07: return "VOL-";
+        case 0x0D: return "EQ";
+
+        case 0x16: return "0";
+
+        case 0x0C: return "1";
+        case 0x18: return "2";
+        case 0x5E: return "3";
+
+        case 0x08: return "4";
+        case 0x1C: return "5";
+        case 0x5A: return "6";
+
+        case 0x42: return "7";
+        case 0x4A: return "8";
+        case 0x52: return "9";
+
+        case 0x19: return "100+";
+        case 0x09: return "200+";
+
+        default: return "DESCONOCIDO";
+    }
+}
+
+
+
+
+*/
+
+
+#include <stdio.h>
+#include <inttypes.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+#define IR_GPIO GPIO_NUM_23
+#define FRAME_SIZE 70
+
+static const char *TAG = "IR";
+
+typedef struct
+{
+    uint32_t duration;
+} edge_event_t;
+
+static QueueHandle_t edge_queue;
+
+/*************************************************************
+ * Utilidades
+ *************************************************************/
+
+static bool near(uint32_t value,
+                 uint32_t target,
+                 uint32_t tolerance)
+{
+    return (value > (target - tolerance)) &&
+           (value < (target + tolerance));
+}
+
+/*************************************************************
+ * ISR
+ *************************************************************/
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    static int64_t last_time = 0;
+
+    int64_t now = esp_timer_get_time();
+
+    if (last_time != 0)
+    {
+        edge_event_t evt;
+        evt.duration = (uint32_t)(now - last_time);
+
+        BaseType_t hp_task_woken = pdFALSE;
+
+        xQueueSendFromISR(
+            edge_queue,
+            &evt,
+            &hp_task_woken);
+
+        if (hp_task_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+
+    last_time = now;
+}
+
+/*************************************************************
+ * Aplicación
+ *************************************************************/
+
+void app_main(void)
+{
+    edge_queue = xQueueCreate(
+        128,
+        sizeof(edge_event_t));
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << IR_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(
+            ESP_INTR_FLAG_IRAM));
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            IR_GPIO,
+            gpio_isr_handler,
+            NULL));
+
+    ESP_LOGI(TAG, "Modo mapeo NEC iniciado");
+
+    edge_event_t evt;
+
+    uint32_t frame[FRAME_SIZE];
+    uint8_t index = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(
+                edge_queue,
+                &evt,
+                portMAX_DELAY))
+        {
+            /*
+             * Leader NEC ~9ms
+             */
+            if (evt.duration > 8500 &&
+                evt.duration < 10000)
+            {
+                index = 0;
+            }
+
+            if (index < FRAME_SIZE)
+            {
+                frame[index++] = evt.duration;
+            }
+
+            if (index >= 66)
+            {
+                if (near(frame[0], 9000, 1500) &&
+                    near(frame[1], 4500, 1000))
+                {
+                    uint32_t code = 0;
+
+                    for (int bit = 0; bit < 32; bit++)
+                    {
+                        uint32_t high_time =
+                            frame[3 + bit * 2];
+
+                        if (high_time > 1200)
+                        {
+                            code |= (1UL << bit);
+                        }
+                    }
+
+                    uint8_t byte0 = (code >> 0) & 0xFF;
+                    uint8_t byte1 = (code >> 8) & 0xFF;
+                    uint8_t byte2 = (code >> 16) & 0xFF;
+                    uint8_t byte3 = (code >> 24) & 0xFF;
+
+                    ESP_LOGI(TAG,
+                             "=====================");
+
+                    ESP_LOGI(TAG,
+                             "CMD   = 0x%02X",
+                             byte2);
+
+                    ESP_LOGI(TAG,
+                             "CODE  = 0x%08" PRIX32,
+                             code);
+
+                    ESP_LOGI(TAG,
+                             "BYTE0 = 0x%02X",
+                             byte0);
+
+                    ESP_LOGI(TAG,
+                             "BYTE1 = 0x%02X",
+                             byte1);
+
+                    ESP_LOGI(TAG,
+                             "BYTE2 = 0x%02X",
+                             byte2);
+
+                    ESP_LOGI(TAG,
+                             "BYTE3 = 0x%02X",
+                             byte3);
+
+                    ESP_LOGI(TAG,
+                             "=====================");
+                }
+
+                index = 0;
+            }
+        }
+    }
+}

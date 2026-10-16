@@ -1,0 +1,218 @@
+#include <stdio.h>
+#include <inttypes.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+#define IR_GPIO GPIO_NUM_23
+#define FRAME_SIZE 70
+
+static const char *TAG = "IR";
+
+typedef struct
+{
+    uint32_t duration;
+} edge_event_t;
+
+static QueueHandle_t edge_queue;
+
+/*************************************************************
+ * Utilidades
+ *************************************************************/
+
+static bool near(uint32_t value,
+                 uint32_t target,
+                 uint32_t tolerance)
+{
+    return (value > (target - tolerance)) &&
+           (value < (target + tolerance));
+}
+
+/*************************************************************
+ * Acciones para cada botón
+ *************************************************************/
+
+static void process_command(uint8_t cmd)
+{
+    switch (cmd)
+    {
+        case 0x45: // CH-
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON CH-");
+            ESP_LOGI(TAG, "Accion: Menu anterior");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x46: // CH
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON CH");
+            ESP_LOGI(TAG, "Accion: Seleccionar");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x47: // CH+
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON CH+");
+            ESP_LOGI(TAG, "Accion: Menu siguiente");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x43: // PLAY
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON PLAY");
+            ESP_LOGI(TAG, "Accion: Ejecutar");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x0C: // 1
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON 1");
+            ESP_LOGI(TAG, "Numero seleccionado: 1");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x18: // 2
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON 2");
+            ESP_LOGI(TAG, "Numero seleccionado: 2");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        case 0x5E: // 3
+            ESP_LOGI(TAG, "================================");
+            ESP_LOGI(TAG, "BOTON 3");
+            ESP_LOGI(TAG, "Numero seleccionado: 3");
+            ESP_LOGI(TAG, "================================");
+            break;
+
+        default:
+            ESP_LOGI(TAG,
+                     "CMD DESCONOCIDO = 0x%02X",
+                     cmd);
+            break;
+    }
+}
+
+/*************************************************************
+ * ISR
+ *************************************************************/
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    static int64_t last_time = 0;
+
+    int64_t now = esp_timer_get_time();
+
+    if (last_time != 0)
+    {
+        edge_event_t evt;
+        evt.duration = (uint32_t)(now - last_time);
+
+        BaseType_t hp_task_woken = pdFALSE;
+
+        xQueueSendFromISR(
+            edge_queue,
+            &evt,
+            &hp_task_woken);
+
+        if (hp_task_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+
+    last_time = now;
+}
+
+/*************************************************************
+ * app_main
+ *************************************************************/
+
+void app_main(void)
+{
+    edge_queue = xQueueCreate(
+        128,
+        sizeof(edge_event_t));
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << IR_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(
+            ESP_INTR_FLAG_IRAM));
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            IR_GPIO,
+            gpio_isr_handler,
+            NULL));
+
+    ESP_LOGI(TAG, "Decodificador NEC iniciado");
+
+    edge_event_t evt;
+
+    uint32_t frame[FRAME_SIZE];
+    uint8_t index = 0;
+
+    while (1)
+    {
+        if (xQueueReceive(
+                edge_queue,
+                &evt,
+                portMAX_DELAY))
+        {
+            /*
+             * Leader NEC ≈ 9 ms
+             */
+            if (evt.duration > 8500 &&
+                evt.duration < 10000)
+            {
+                index = 0;
+            }
+
+            if (index < FRAME_SIZE)
+            {
+                frame[index++] = evt.duration;
+            }
+
+            if (index >= 66)
+            {
+                if (near(frame[0], 9000, 1500) &&
+                    near(frame[1], 4500, 1000))
+                {
+                    uint32_t code = 0;
+
+                    for (int bit = 0; bit < 32; bit++)
+                    {
+                        uint32_t high_time =
+                            frame[3 + bit * 2];
+
+                        if (high_time > 1200)
+                        {
+                            code |= (1UL << bit);
+                        }
+                    }
+
+                    uint8_t cmd =
+                        (code >> 16) & 0xFF;
+
+                    process_command(cmd);
+                }
+
+                index = 0;
+            }
+        }
+    }
+}

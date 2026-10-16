@@ -1,0 +1,282 @@
+/*contador de teclas */
+
+#include <stdio.h>
+#include <inttypes.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "driver/gpio.h"
+#include "esp_log.h"
+#include "esp_err.h"
+
+#define IR_GPIO GPIO_NUM_23
+
+static const char *TAG = "IR";
+
+volatile uint32_t edge_count = 0;
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    edge_count++;
+}
+
+void app_main(void)
+{
+    ESP_LOGI(TAG, "Inicializando prueba de interrupciones");
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << IR_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(
+            ESP_INTR_FLAG_IRAM));
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            IR_GPIO,
+            gpio_isr_handler,
+            NULL));
+
+    ESP_LOGI(TAG, "ISR instalada en GPIO23");
+
+    while (1)
+    {
+        ESP_LOGI(TAG,
+                 "Flancos recibidos: %" PRIu32,
+                 edge_count);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+
+
+/**mapeo de botones */
+
+#include <stdio.h>
+#include <inttypes.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "esp_log.h"
+
+#define IR_GPIO GPIO_NUM_23
+
+#define FRAME_SIZE 70
+
+static const char *TAG = "IR";
+
+typedef struct
+{
+    uint32_t duration;
+} edge_event_t;
+
+static QueueHandle_t edge_queue;
+
+/*************************************************************
+ * Utilidades
+ *************************************************************/
+
+static bool near(uint32_t value,
+                 uint32_t target,
+                 uint32_t tolerance)
+{
+    return (value > (target - tolerance)) &&
+           (value < (target + tolerance));
+}
+
+static const char *get_button_name(uint32_t code)
+{
+    switch (code)
+    {
+            case 0xBA45FF00: return "CH-";
+        case 0xE619FF00: return "CH";
+        case 0xF609FF00: return "CH+";
+
+        case 0xBF40FF00: return "PREV";
+        case 0xBC43FF00: return "PLAY";
+        case 0xEA15FF00: return "NEXT";
+
+        case 0xF807FF00: return "VOL-";
+        case 0xF20DFF00: return "EQ";
+
+        case 0xF30CFF00: return "1";
+        case 0xE718FF00: return "2";
+        case 0xA15EFF00: return "3";
+
+        case 0xF708FF00: return "4";
+        case 0xE31CFF00: return "5";
+        case 0xA55AFF00: return "6";
+
+        case 0xBD42FF00: return "7";
+        case 0xB54AFF00: return "8";
+        case 0xAD52FF00: return "9";
+
+        case 0xB946FF00: return "100+";
+        case 0xB847FF00: return "200+";
+
+       
+        default:
+            return "DESCONOCIDO";
+    }
+}
+
+/*************************************************************
+ * ISR
+ *************************************************************/
+
+static void IRAM_ATTR gpio_isr_handler(void *arg)
+{
+    static int64_t last_time = 0;
+
+    int64_t now = esp_timer_get_time();
+
+    if (last_time != 0)
+    {
+        edge_event_t evt;
+        evt.duration = (uint32_t)(now - last_time);
+
+        BaseType_t hp_task_woken = pdFALSE;
+
+        xQueueSendFromISR(
+            edge_queue,
+            &evt,
+            &hp_task_woken);
+
+        if (hp_task_woken)
+        {
+            portYIELD_FROM_ISR();
+        }
+    }
+
+    last_time = now;
+}
+
+/*************************************************************
+ * Aplicación
+ *************************************************************/
+
+void app_main(void)
+{
+    edge_queue = xQueueCreate(
+        128,
+        sizeof(edge_event_t));
+
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << IR_GPIO),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_ANYEDGE
+    };
+
+    ESP_ERROR_CHECK(gpio_config(&io_conf));
+
+    ESP_ERROR_CHECK(
+        gpio_install_isr_service(
+            ESP_INTR_FLAG_IRAM));
+
+    ESP_ERROR_CHECK(
+        gpio_isr_handler_add(
+            IR_GPIO,
+            gpio_isr_handler,
+            NULL));
+
+    ESP_LOGI(TAG, "Decodificador NEC iniciado");
+
+    uint32_t frame[FRAME_SIZE];
+    uint8_t index = 0;
+
+    uint32_t ultimo_codigo = 0;
+
+    edge_event_t evt;
+
+    while (1)
+    {
+        if (xQueueReceive(
+                edge_queue,
+                &evt,
+                portMAX_DELAY))
+        {
+            /*
+             * Leader NEC:
+             * ~9000 us
+             *
+             * Si aparece un leader nuevo,
+             * reiniciamos la captura.
+             */
+            if (evt.duration > 8500 &&
+                evt.duration < 10000)
+            {
+                index = 0;
+            }
+
+            if (index < FRAME_SIZE)
+            {
+                frame[index++] = evt.duration;
+            }
+
+            /*
+             * Leader + datos completos
+             */
+            if (index >= 66)
+            {
+                if (near(frame[0], 9000, 1500) &&
+                    near(frame[1], 4500, 1000))
+                {
+                    uint32_t code = 0;
+
+                    for (int bit = 0; bit < 32; bit++)
+                    {
+                        uint32_t high_time =
+                            frame[3 + bit * 2];
+
+                        if (high_time > 1200)
+                        {
+                            code |= (1UL << bit);
+                        }
+                    }
+
+                    if (code != ultimo_codigo)
+                    {
+                        uint8_t b0 = (code >> 0) & 0xFF;
+                        uint8_t b1 = (code >> 8) & 0xFF;
+                        uint8_t b2 = (code >> 16) & 0xFF;
+                        uint8_t b3 = (code >> 24) & 0xFF;
+
+                        ESP_LOGI(TAG,
+                                 "CODIGO = 0x%08" PRIX32,
+                                 code);
+
+                        ESP_LOGI(TAG,
+                                 "BYTES  = [%02X %02X %02X %02X]",
+                                 b0,
+                                 b1,
+                                 b2,
+                                 b3);
+
+                        ESP_LOGI(TAG,
+                                 "BOTON  = %s",
+                                 get_button_name(code));
+
+                        ultimo_codigo = code;
+                    }
+                }
+
+                index = 0;
+            }
+        }
+    }
+}
