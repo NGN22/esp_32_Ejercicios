@@ -1,0 +1,115 @@
+#include <stdio.h>
+#include <stdint.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "esp_rom_sys.h"
+#include "esp_log.h"
+
+#define DHT11_GPIO GPIO_NUM_19
+
+static const char *TAG = "DHT11";
+
+/* Espera hasta que el pin cambie de estado */
+static int dht_wait_level(int level, int timeout_us)
+{
+    int count = 0;
+
+    while (gpio_get_level(DHT11_GPIO) == level)
+    {
+        esp_rom_delay_us(1);
+
+        if (++count > timeout_us)
+        {
+            return -1;
+        }
+    }
+
+    return count;
+}
+
+/* Lee los 5 bytes del DHT11 */
+static esp_err_t dht11_read(float *humidity, float *temperature)
+{
+    uint8_t data[5] = {0};
+
+    gpio_set_direction(DHT11_GPIO, GPIO_MODE_OUTPUT);
+
+    gpio_set_level(DHT11_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(20));
+
+    gpio_set_level(DHT11_GPIO, 1);
+    esp_rom_delay_us(40);
+
+    gpio_set_direction(DHT11_GPIO, GPIO_MODE_INPUT);
+
+    if (dht_wait_level(1, 100) < 0)
+        return ESP_FAIL;
+
+    if (dht_wait_level(0, 100) < 0)
+        return ESP_FAIL;
+
+    if (dht_wait_level(1, 100) < 0)
+        return ESP_FAIL;
+
+    for (int i = 0; i < 40; i++)
+    {
+        if (dht_wait_level(0, 70) < 0)
+            return ESP_FAIL;
+
+        int pulse = dht_wait_level(1, 100);
+
+        if (pulse < 0)
+            return ESP_FAIL;
+
+        data[i / 8] <<= 1;
+
+        if (pulse > 40)
+        {
+            data[i / 8] |= 1;
+        }
+    }
+
+    uint8_t checksum =
+        data[0] +
+        data[1] +
+        data[2] +
+        data[3];
+
+    if (checksum != data[4])
+    {
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    *humidity = data[0];
+    *temperature = data[2];
+
+    return ESP_OK;
+}
+
+void app_main(void)
+{
+    float temperature;
+    float humidity;
+
+    ESP_LOGI(TAG, "Iniciando lectura DHT11 en GPIO19");
+
+    while (1)
+    {
+        esp_err_t ret = dht11_read(&humidity, &temperature);
+
+        if (ret == ESP_OK)
+        {
+            ESP_LOGI(TAG,
+                     "Temperatura = %.1f C | Humedad = %.1f %%",
+                     temperature,
+                     humidity);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Error leyendo DHT11");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}

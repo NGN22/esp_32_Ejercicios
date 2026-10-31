@@ -77,7 +77,7 @@ void app_main(void)
 #define FRAME_SIZE 70
 
 static const char *TAG = "IR";
-
+/*mapeo de botones algunos ya mapeados*/
 typedef struct
 {
     uint32_t duration;
