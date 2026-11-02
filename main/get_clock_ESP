@@ -1,0 +1,38 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "esp_log.h"
+
+#include "ds1302.h"
+
+#define RTC_RST_GPIO GPIO_NUM_33
+#define RTC_DAT_GPIO GPIO_NUM_32
+#define RTC_CLK_GPIO GPIO_NUM_14
+
+static const char *TAG = "MAIN";
+
+void app_main(void)
+{
+    ds1302_datetime_t rtc;
+
+    ds1302_init(
+        RTC_RST_GPIO,
+        RTC_DAT_GPIO,
+        RTC_CLK_GPIO);
+
+    while (1)
+    {
+        ds1302_get_datetime(&rtc);
+
+        ESP_LOGI(TAG,
+                 "%02d/%02d/20%02d %02d:%02d:%02d",
+                 rtc.day,
+                 rtc.month,
+                 rtc.year,
+                 rtc.hour,
+                 rtc.minute,
+                 rtc.second);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}

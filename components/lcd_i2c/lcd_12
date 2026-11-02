@@ -28,7 +28,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(
         lcd_init(bus));
-
+    
 
 
     lcd_clear();
@@ -44,7 +44,7 @@ while (1)
         lcd_print("                ");
 
         lcd_set_cursor(pos,0);
-        lcd_print("Hola GER son las 02:40 de la madrugada");
+        lcd_print("Hola GER son las 02:40 de la madrugada"); 
 
         vTaskDelay(pdMS_TO_TICKS(300));
     }

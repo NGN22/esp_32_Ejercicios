@@ -195,7 +195,7 @@ void app_main(void)
     ds1302_init();
 
     /*ds1302_set_time(12, 34, 50);*/
-
+    
     /*ds1302_set_datetime(
         26,  // año (2026)
         11,  // mes
